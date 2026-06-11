@@ -223,6 +223,35 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         Effect.sync(() => process.on("SIGHUP", onSighup)),
         () => Effect.sync(() => process.off("SIGHUP", onSighup)),
       )
+      // Handle external SIGTSTP (code-server terminal management, job control, kill -TSTP)
+      // so mouse tracking is disabled before suspension; otherwise the shell receives
+      // mouse events as garbled escape sequences. SIGCONT resume is guarded by a flag so a
+      // bare SIGCONT (e.g. terminal refocus) doesn't add a duplicate stdin listener.
+      let suspendedBySigtstp = false
+      const sigtstpHandler = () => {
+        suspendedBySigtstp = true
+        renderer.suspend()
+        process.removeListener("SIGTSTP", sigtstpHandler)
+        process.kill(process.pid, "SIGTSTP")
+      }
+      const sigcontHandler = () => {
+        process.on("SIGTSTP", sigtstpHandler)
+        if (suspendedBySigtstp) {
+          suspendedBySigtstp = false
+          renderer.resume()
+        }
+      }
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          process.on("SIGTSTP", sigtstpHandler)
+          process.on("SIGCONT", sigcontHandler)
+        }),
+        () =>
+          Effect.sync(() => {
+            process.off("SIGTSTP", sigtstpHandler)
+            process.off("SIGCONT", sigcontHandler)
+          }),
+      )
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
       const pluginRuntime = createPluginRuntime()
 
